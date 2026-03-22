@@ -1,21 +1,98 @@
+import { useState, useEffect } from "react";
 import { Clock, Plus, Users, GraduationCap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 import { dayLabels, allTimeSlots } from "@/constants/admin";
 
-interface TurmasTabProps {
-  selectedDayOfWeek: number;
-  setSelectedDayOfWeek: (v: number) => void;
-  classesData: any[];
-  handleAddClass: (dayOfWeek: number, timeSlot: string) => void;
-  teachers: any[];
-  handleAssignTeacher: (classId: string, teacherId: string) => void;
-}
+interface TurmasTabProps {}
 
-const TurmasTab = ({
-  selectedDayOfWeek, setSelectedDayOfWeek, classesData,
-  handleAddClass, teachers, handleAssignTeacher
-}: TurmasTabProps) => {
+const TurmasTab = ({}: TurmasTabProps) => {
+  const { toast } = useToast();
+  const [selectedDayOfWeek, setSelectedDayOfWeek] = useState(new Date().getDay() || 1);
+  const [classesData, setClassesData] = useState<any[]>([]);
+  const [teachers, setTeachers] = useState<any[]>([]);
+
+  const fetchTeachers = async () => {
+    const { data } = await supabase.from("teachers").select("*").order("name");
+    setTeachers(data || []);
+  };
+
+  const fetchClasses = async () => {
+    const todayStr = new Date().toISOString().split("T")[0];
+    const { data: classes } = await supabase
+      .from("classes")
+      .select("id, time_slot, day_of_week, max_students, teacher_id")
+      .order("time_slot");
+
+    if (!classes) return;
+
+    const { data: rawBookings } = await supabase
+      .from("bookings")
+      .select("class_id, user_id, is_trial, trial_name, trial_phone")
+      .eq("booking_date", todayStr)
+      .eq("status", "confirmed");
+    const bookingUserIds = [...new Set((rawBookings || []).map((b) => b.user_id).filter(Boolean))];
+    const { data: profilesData } = bookingUserIds.length > 0
+      ? await supabase.from("profiles").select("id, name").in("id", bookingUserIds)
+      : { data: [] };
+    const bookingProfileMap: Record<string, string> = {};
+    (profilesData || []).forEach((p: any) => { bookingProfileMap[p.id] = p.name; });
+    const bookings = (rawBookings || []).map((b) => ({ ...b, profiles: { name: bookingProfileMap[b.user_id] || null } }));
+
+    const enriched = classes.map((c) => {
+      const classBookings = bookings?.filter((b) => b.class_id === c.id) || [];
+      return {
+        ...c,
+        bookings: classBookings.map((b) => ({
+          name: b.is_trial ? `${b.trial_name} (Experimental)` : (b as any).profiles?.name || "Aluno",
+          isTrial: b.is_trial,
+          trialName: b.trial_name,
+          trialPhone: b.trial_phone,
+        })),
+      };
+    });
+    setClassesData(enriched);
+  };
+
+  useEffect(() => {
+    fetchTeachers();
+    fetchClasses();
+
+    const channel = supabase
+      .channel("admin-bookings-turmas")
+      .on("postgres_changes", { event: "*", schema: "public", table: "bookings" }, () => fetchClasses())
+      .on("postgres_changes", { event: "*", schema: "public", table: "classes" }, () => fetchClasses())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const handleAddClass = async (dayOfWeek: number, timeSlot: string) => {
+    const { data, error } = await supabase.from("classes").insert({
+      day_of_week: dayOfWeek,
+      time_slot: timeSlot,
+      max_students: 6
+    }).select();
+    
+    if (error) {
+      toast({ title: "Erro ao criar turma", description: error.message, variant: "destructive" });
+      return;
+    }
+    if (data) {
+      toast({ title: "Turma criada! ✅" });
+      fetchClasses();
+    }
+  };
+
+  const handleAssignTeacher = async (classId: string, teacherId: string) => {
+    await supabase.from("classes").update({ teacher_id: teacherId || null }).eq("id", classId);
+    toast({ title: "Professor atualizado" });
+    fetchClasses();
+  };
 
   const filteredClasses = classesData.filter((c) => c.day_of_week === selectedDayOfWeek);
 

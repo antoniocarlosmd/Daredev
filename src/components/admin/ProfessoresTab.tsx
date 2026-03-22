@@ -1,28 +1,54 @@
+import { useState, useEffect } from "react";
 import { GraduationCap, Plus, Search, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
-interface ProfessoresTabProps {
-  profSearch: string;
-  setProfSearch: (v: string) => void;
-  novoProf: string;
-  setNovoProf: (v: string) => void;
-  profLoading: boolean;
-  handleAddTeacher: () => void;
-  teachers: any[];
-  editingTeacher: string | null;
-  setEditingTeacher: (v: string | null) => void;
-  editTeacherName: string;
-  setEditTeacherName: (v: string) => void;
-  handleEditTeacher: (id: string) => void;
-  handleDeleteTeacher: (id: string) => void;
-}
+interface ProfessoresTabProps {}
 
-const ProfessoresTab = ({
-  profSearch, setProfSearch, novoProf, setNovoProf, profLoading,
-  handleAddTeacher, teachers, editingTeacher, setEditingTeacher,
-  editTeacherName, setEditTeacherName, handleEditTeacher, handleDeleteTeacher
-}: ProfessoresTabProps) => {
+const ProfessoresTab = ({}: ProfessoresTabProps) => {
+  const { toast } = useToast();
+  const [teachers, setTeachers] = useState<any[]>([]);
+  const [profSearch, setProfSearch] = useState("");
+  const [novoProf, setNovoProf] = useState("");
+  const [profLoading, setProfLoading] = useState(false);
+  const [editingTeacher, setEditingTeacher] = useState<string | null>(null);
+  const [editTeacherName, setEditTeacherName] = useState("");
+
+  const fetchTeachers = async () => {
+    const { data } = await supabase.from("teachers").select("*").order("name");
+    setTeachers(data || []);
+  };
+
+  useEffect(() => {
+    fetchTeachers();
+  }, []);
+
+  const handleAddTeacher = async () => {
+    if (!novoProf.trim()) return;
+    setProfLoading(true);
+    const { error } = await supabase.from("teachers").insert({ name: novoProf.trim() });
+    setProfLoading(false);
+    if (error) { toast({ title: "Erro ao cadastrar professor", variant: "destructive" }); return; }
+    toast({ title: "Professor cadastrado! ✅" });
+    setNovoProf("");
+    fetchTeachers();
+  };
+
+  const handleDeleteTeacher = async (id: string) => {
+    await supabase.from("teachers").delete().eq("id", id);
+    toast({ title: "Professor removido" });
+    fetchTeachers();
+  };
+
+  const handleEditTeacher = async (id: string) => {
+    if (!editTeacherName.trim()) return;
+    await supabase.from("teachers").update({ name: editTeacherName.trim() }).eq("id", id);
+    toast({ title: "Professor atualizado" });
+    setEditingTeacher(null);
+    fetchTeachers();
+  };
 
   const filteredTeachers = teachers.filter((t) => 
     (t.name || "").toLowerCase().includes(profSearch.toLowerCase())

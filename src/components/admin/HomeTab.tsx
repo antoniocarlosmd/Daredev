@@ -1,16 +1,126 @@
+import { useState, useEffect } from "react";
 import { DollarSign, Users, Clock, UserPlus, Home, UserPlus as UserPlusIcon, GraduationCap, CalendarDays } from "lucide-react";
 import { AdminTab } from "@/constants/admin";
+import { supabase } from "@/integrations/supabase/client";
 import { PaymentTotals } from "./PaymentTotals";
 
 interface HomeTabProps {
   nomeGestor: string;
-  todayPayments: any[];
-  todayClasses: any[];
   setActiveTab: (tab: AdminTab) => void;
   handleConvertTrial: (name: string, phone: string) => void;
 }
 
-const HomeTab = ({ nomeGestor, todayPayments, todayClasses, setActiveTab, handleConvertTrial }: HomeTabProps) => {
+const HomeTab = ({ nomeGestor, setActiveTab, handleConvertTrial }: HomeTabProps) => {
+  const [todayPayments, setTodayPayments] = useState<any[]>([]);
+  const [todayClasses, setTodayClasses] = useState<any[]>([]);
+  const today = new Date().toISOString().split("T")[0];
+
+  // Fetch today's payments
+  useEffect(() => {
+    const fetchTodayPayments = async () => {
+      const { data: paymentsData } = await supabase
+        .from("payments")
+        .select("*")
+        .gte("created_at", `${today}T00:00:00`)
+        .lte("created_at", `${today}T23:59:59`)
+        .eq("status", "paid")
+        .order("created_at", { ascending: false });
+      if (!paymentsData) { setTodayPayments([]); return; }
+      const userIds = [...new Set(paymentsData.map((p) => p.user_id).filter(Boolean))];
+      const { data: profilesData } = userIds.length > 0
+        ? await supabase.from("profiles").select("id, name").in("id", userIds)
+        : { data: [] };
+      const profileMap: Record<string, string> = {};
+      (profilesData || []).forEach((p: any) => { profileMap[p.id] = p.name; });
+      setTodayPayments(paymentsData.map((p) => ({ ...p, profiles: { name: profileMap[p.user_id] || null } })));
+    };
+    fetchTodayPayments();
+
+    const channel = supabase
+      .channel("admin-today-payments")
+      .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, () => fetchTodayPayments())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [today]);
+
+  // Fetch today's classes
+  useEffect(() => {
+    const fetchTodayClasses = async () => {
+      const now = new Date();
+      const currentDow = now.getDay();
+      if (currentDow === 0 || currentDow === 6) {
+        setTodayClasses([]);
+        return;
+      }
+      const todayStr = now.toISOString().split("T")[0];
+      const currentHour = now.getHours();
+      const currentMinute = now.getMinutes();
+
+      const { data: classes } = await supabase
+        .from("classes")
+        .select("id, time_slot, max_students, teacher_id")
+        .eq("day_of_week", currentDow)
+        .order("time_slot");
+
+      if (!classes) return;
+
+      const { data: rawBookings } = await supabase
+        .from("bookings")
+        .select("class_id, user_id, is_trial, trial_name, trial_phone")
+        .eq("booking_date", todayStr)
+        .eq("status", "confirmed");
+      const bookingUserIds = [...new Set((rawBookings || []).map((b) => b.user_id).filter(Boolean))];
+      const { data: bookingProfiles } = bookingUserIds.length > 0
+        ? await supabase.from("profiles").select("id, name").in("id", bookingUserIds)
+        : { data: [] };
+      const bookingProfileMap: Record<string, string> = {};
+      (bookingProfiles || []).forEach((p: any) => { bookingProfileMap[p.id] = p.name; });
+      const bookings = (rawBookings || []).map((b) => ({ ...b, profiles: { name: bookingProfileMap[b.user_id] || null } }));
+
+      const filtered = classes.filter((c) => {
+        const [h] = c.time_slot.split(":").map(Number);
+        const classEndMinutes = (h + 1) * 60;
+        const nowMinutes = currentHour * 60 + currentMinute;
+        return nowMinutes < classEndMinutes && nowMinutes >= h * 60;
+      });
+
+      let displayClasses = filtered;
+      if (filtered.length === 0) {
+        displayClasses = classes.filter((c) => {
+          const [h] = c.time_slot.split(":").map(Number);
+          return h * 60 > currentHour * 60 + currentMinute;
+        }).slice(0, 3);
+      }
+      if (displayClasses.length === 0) displayClasses = classes;
+
+      const enriched = displayClasses.map((c) => {
+        const classBookings = bookings?.filter((b) => b.class_id === c.id) || [];
+        return {
+          ...c,
+          bookings: classBookings.map((b) => ({
+            name: b.is_trial ? `${b.trial_name} (Experimental)` : (b as any).profiles?.name || "Aluno",
+            isTrial: b.is_trial,
+            trialName: b.trial_name,
+            trialPhone: b.trial_phone,
+          })),
+        };
+      });
+      setTodayClasses(enriched);
+    };
+
+    fetchTodayClasses();
+    const interval = setInterval(fetchTodayClasses, 60000);
+    const channel = supabase
+      .channel("admin-today-classes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "bookings" }, () => fetchTodayClasses())
+      .subscribe();
+
+    return () => {
+      clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   return (
     <>
       <div className="mb-4">

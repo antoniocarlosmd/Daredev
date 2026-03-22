@@ -1,19 +1,45 @@
+import { useState, useEffect } from "react";
 import { DollarSign, Search, Mail, Calendar } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { supabase } from "@/integrations/supabase/client";
 import { PaymentTotals } from "./PaymentTotals";
 import { formatBirthDate, formatPaymentMethod, categorizePayment } from "@/utils/adminUtils";
 
-interface PagamentosTabProps {
-  dataInicio: string;
-  setDataInicio: (v: string) => void;
-  dataFim: string;
-  setDataFim: (v: string) => void;
-  payments: any[];
-}
+interface PagamentosTabProps {}
 
-const PagamentosTab = ({
-  dataInicio, setDataInicio, dataFim, setDataFim, payments
-}: PagamentosTabProps) => {
+const PagamentosTab = ({}: PagamentosTabProps) => {
+  const today = new Date().toISOString().split("T")[0];
+  const [dataInicio, setDataInicio] = useState(today);
+  const [dataFim, setDataFim] = useState(today);
+  const [payments, setPayments] = useState<any[]>([]);
+
+  const fetchPayments = async () => {
+    const { data: paymentsData } = await supabase
+      .from("payments")
+      .select("*")
+      .gte("created_at", `${dataInicio}T00:00:00`)
+      .lte("created_at", `${dataFim}T23:59:59`)
+      .eq("status", "paid")
+      .order("created_at", { ascending: false });
+
+    if (!paymentsData) {
+      setPayments([]);
+      return;
+    }
+
+    const userIds = [...new Set(paymentsData.map((p) => p.user_id).filter(Boolean))];
+    const { data: profilesData } = userIds.length > 0
+      ? await supabase.from("profiles").select("id, name").in("id", userIds)
+      : { data: [] };
+    const profileMap: Record<string, string> = {};
+    (profilesData || []).forEach((p: any) => { profileMap[p.id] = p.name; });
+
+    setPayments(paymentsData.map((p) => ({ ...p, profiles: { name: profileMap[p.user_id] || null } })));
+  };
+
+  useEffect(() => {
+    fetchPayments();
+  }, [dataInicio, dataFim]);
 
   return (
     <>
