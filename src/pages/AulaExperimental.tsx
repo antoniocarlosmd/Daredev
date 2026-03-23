@@ -93,10 +93,8 @@ const AulaExperimental = () => {
     if (!selectedDay) return [];
     const isToday = selectedDay === today;
     
-    // Only show slots that have actually been created/configured in the backend
-    const configuredSlots = Object.keys(spotsMap).sort();
-    
-    return configuredSlots.filter((time) => {
+    // Show all standard time slots — trials should always have options
+    return allTimeSlots.filter((time) => {
       const [hours] = time.split(":").map(Number);
       if (isToday) {
         const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
@@ -162,17 +160,26 @@ const AulaExperimental = () => {
     const selectedDate = new Date(year, month, selectedDay!);
     const dayOfWeek = selectedDate.getDay();
 
-    const { data: classData } = await supabase
+    let { data: classData } = await supabase
       .from("classes")
       .select("id")
       .eq("day_of_week", dayOfWeek)
       .eq("time_slot", selectedTime!)
       .single();
 
+    // If no class exists for this slot, create one automatically
     if (!classData) {
-      setLoading(false);
-      toast({ title: "Erro ao encontrar a turma", variant: "destructive" });
-      return;
+      const { data: newClass, error: createError } = await supabase
+        .from("classes")
+        .insert({ day_of_week: dayOfWeek, time_slot: selectedTime!, max_students: 6 })
+        .select("id")
+        .single();
+      if (createError || !newClass) {
+        setLoading(false);
+        toast({ title: "Erro ao criar a turma", variant: "destructive" });
+        return;
+      }
+      classData = newClass;
     }
 
     const { error } = await supabase.from("bookings").insert({
